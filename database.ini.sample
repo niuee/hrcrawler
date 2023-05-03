@@ -1,0 +1,6 @@
+[postgresql]
+host=localhost
+database=YOUR DB
+user=horse_crawler # you can change this but you have to change the pre.sql as well
+password=INSERT YOUR OWN PASSWORD
+port=5432
