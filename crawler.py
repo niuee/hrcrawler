@@ -1,6 +1,9 @@
 import requests
 import urllib.parse
 import time
+import sys
+import signal
+import os
 from collections import deque
 from bs4 import BeautifulSoup
 from dbconnect import DBCon
@@ -42,6 +45,7 @@ class ReqBuilder:
 class HorseCrawler:
 
     def __init__(self) -> None:
+        self.start_time = time.time()
         self.crawl_list = deque()
         self.req_builder = ReqBuilder()
         self.crawl_count = 0
@@ -52,6 +56,21 @@ class HorseCrawler:
     def __del__(self):
         self.db_con.disconnect()
     
+    def graceful_shutdown(self, signum, frame):
+        print("[LOG] shutting down...")
+
+        f = open("crawl_continue_list.txt", "w+")
+        for horse_id in self.crawl_list:
+            if horse_id:
+                f.write(horse_id + "\n")
+        f.close()
+        self.db_con.disconnect()
+        end_time = time.time()
+        print("time: ", end_time - start_time)
+        print("crawl count: ", self.crawl_count)
+        print("crawling ended in grace shutdown")
+        sys.exit(0)
+    
     def set_crawl_list(self, horse_id_list):
         self.crawl_list = deque(horse_id_list)
         self.crawl_count = 0
@@ -59,32 +78,49 @@ class HorseCrawler:
     def add_crawl_list(self, horse_id):
         self.crawl_list.append(horse_id)
     
-    def crawl(self):
+    def limited_crawl(self):
         while self.crawl_list and self.crawl_count < self.crawl_limit:
             horse_id = self.crawl_list.popleft()
-            print("###############")
+            print("---------------------------------------")
             print("[LOG] going into crawling of:", horse_id)
             try:
-                if self.crawl_horse(horse_id):
+                if self.crawl_horse(horse_id, recusive=False):
                     self.crawl_count += 1
             except Exception as e:
                 print("[ERROR]:", e)
+        self.db_con.disconnect()
+    
+    def crawl(self):
+        self.start_time = time.time()
+        while self.crawl_list and self.crawl_count < self.crawl_limit:
+            horse_id = self.crawl_list.popleft()
+            print("---------------------------------------")
+            print("[LOG] current crawl count:", self.crawl_count)
+            print("[LOG] crawl percentage:", str(self.crawl_count / self.crawl_limit * 100) + "%")
+            print("[LOG] going into crawling of:", horse_id)
+            try:
+                if self.crawl_horse(horse_id, recusive=True):
+                    self.crawl_count += 1
+            except Exception as e:
+                print("[ERROR]:", e)
+        
+        if len(self.crawl_list) == 0:
+            print("[LOG] crawling ended in normal shutdown (exhausted crawl list)")
 
         self.db_con.disconnect()
-        print("[ERROR]:", e)
-        self.db_con.disconnect()
-        f = open("crawl_list.txt", "w+")
+        f = open("crawl_continue_list.txt", "w+")
         for horse_id in self.crawl_list:
-            f.write(horse_id + "\n")
+            if horse_id:
+                f.write(horse_id + "\n")
         f.close()
     
     def get_direct_text_only(self, parent):
         return ''.join(parent.find_all(string=True, recursive=False)).strip()
     
-    def crawl_horse(self, horse_id: str) -> bool:
-        print("-----------------------------")
+    def crawl_horse(self, horse_id: str, recusive: bool) -> bool:
         print("[LOG] crawling horse id:", horse_id)
         if horse_id == "" or self.db_con.horse_populated(horse_id):
+            print("[LOG] dupilcate horse")
             return False
         res = self.req_builder.get_page('https://db.netkeiba.com/horse/' + horse_id + '/')
         if res == None:
@@ -126,7 +162,6 @@ class HorseCrawler:
         name = soup.find('div', attrs={'class': 'horse_title'}).find('h1').text
         if name == "":
             return False
-        print("name:", name)
 
         # get attrs
         attrs = soup.find('div', attrs={'class': 'horse_title'}).find('p', attrs={'class': 'txt_01'})
@@ -134,20 +169,24 @@ class HorseCrawler:
         attrs = attrs.replace(" ", "").split("\u3000")
 
         # get horse sex
-        sex = attrs[1][0]
+        if len(attrs) > 2:
+            sex = attrs[1][0]
 
         # get fur color
-        fur_color = attrs[2]
-        if fur_color == "":
+        if len(attrs) > 3:
+            fur_color = attrs[2]
+        if fur_color and fur_color == "":
             print("[LOG]: no fur color provided")
             fur_color = None
-        if attrs[0] == "抹消" or attrs[0] == "現役":
-            if attrs[0] == "現役":
-                actively_racing = True
-                classic = False
-            elif attrs[0] == "抹消":
-                actively_racing = False
-            jra_registered = True
+
+        if attrs: 
+            if attrs[0] == "抹消" or attrs[0] == "現役":
+                if attrs[0] == "現役":
+                    actively_racing = True
+                    classic = False
+                elif attrs[0] == "抹消":
+                    actively_racing = False
+                jra_registered = True
 
         # get classic status
         classic_tag = soup.find('div', attrs={'class': 'horse_title'}).find('p', attrs={'class': 'txt_01'}).find('span')
@@ -159,7 +198,7 @@ class HorseCrawler:
         eng_para_tag = horse_title.find('p', attrs={'class': 'eng_name'})
         if eng_para_tag:
             alt_name = horse_title.find('a').text
-            print("Alt name raw:", alt_name)
+            # print("Alt name raw:", alt_name)
             if is_cjk(alt_name[0]):
                 print("[LOG]: alt name is not in alphabets")
             else:
@@ -186,15 +225,15 @@ class HorseCrawler:
             dam_id = dam['href'].split("/")[3]
             dam = dam.text
         
-        if sex == '牡':
-            sex = 'Horse'
-        elif sex == '牝':
-            sex = 'Mare'
-        elif sex == 'セ':
-            sex = 'Gelding'
-        else:
-            sex = None
+        if sex:
+            if sex == '牡':
+                sex = 'Horse'
+            elif sex == '牝':
+                sex = 'Mare'
+            elif sex == 'セ':
+                sex = 'Gelding'
 
+        print("name:", name)
         print("alt name:", alt_name)
         print("sex:", sex)
         print("born year:", year)
@@ -203,8 +242,7 @@ class HorseCrawler:
         print("dam: {}, dam id: {}".format(dam, dam_id))
         print("registered or once registered") if jra_registered else print("registration undetermined")
 
-        self.add_crawl_list(sire_id)
-        self.add_crawl_list(dam_id)
+
 
         if sire_id and not self.db_con.horse_exists(sire_id):
             self.db_con.insert_horse_with_placeholder(sire_id)
@@ -245,62 +283,63 @@ class HorseCrawler:
             self.db_con.rollback_change()
             return False
         
-        if sex == "Horse":
-            name_in_param = urllib.parse.quote(name.encode('euc-jp'))
-            offspring_search_url = "https://db.netkeiba.com/?pid=horse_list&sire=" + name_in_param
-            test_res = self.req_builder.get_page(offspring_search_url)
-            if test_res == None:
-                return True
-            test_soup = BeautifulSoup(test_res, 'html.parser')
-            last_page_url = test_soup.find('a', attrs={'title': '最後'})
-            last_page_number = 1
-            if last_page_url != None:
-                last_page_url = last_page_url['href']
-                last_page_number = int(urllib.parse.parse_qs(last_page_url)['page'][0])
-            last_page_number = min(last_page_number, 3)
-            for page in range(1, last_page_number):
-                offspring_search_url = "https://db.netkeiba.com/?pid=horse_list&sire=" + name_in_param + "&page=" + str(page) + "&sort_key=prize&sort_type=desc"
+        if recusive:
+            if sex == "Horse":
+                name_in_param = urllib.parse.quote(name.encode('euc-jp'))
+                offspring_search_url = "https://db.netkeiba.com/?pid=horse_list&sire=" + name_in_param
+                test_res = self.req_builder.get_page(offspring_search_url)
+                if test_res != None:
+                    test_soup = BeautifulSoup(test_res, 'html.parser')
+                    last_page_url = test_soup.find('a', attrs={'title': '最後'})
+                    last_page_number = 1
+                    if last_page_url != None:
+                        last_page_url = last_page_url['href']
+                        last_page_number = int(urllib.parse.parse_qs(last_page_url)['page'][0])
+                    last_page_number = min(last_page_number, 3)
+                    for page in range(1, last_page_number):
+                        offspring_search_url = "https://db.netkeiba.com/?pid=horse_list&sire=" + name_in_param + "&page=" + str(page) + "&sort_key=prize&sort_type=desc"
+                        res = self.req_builder.get_page(offspring_search_url)
+                        if res != None:
+                            soup = BeautifulSoup(res, 'html.parser')
+                            table = soup.find('table', attrs={'summary': '競走馬検索結果'})
+                            for tr in table.findAll('tr'):
+                                row_data = tr.findAll('td')
+                                if row_data:
+                                    child_horse_id = tr.findAll('td')[1].find('a')['href'].split("/")[2]
+                                    if child_horse_id != "":
+                                        if self.db_con.horse_populated(child_horse_id):
+                                            continue
+                                        self.add_crawl_list(child_horse_id)
+            elif sex == "Mare":
+                offspring_search_url = "https://db.netkeiba.com/mare/" + horse_id + "/"
                 res = self.req_builder.get_page(offspring_search_url)
-                if res == None:
-                    continue
-                soup = BeautifulSoup(res, 'html.parser')
-                table = soup.find('table', attrs={'summary': '競走馬検索結果'})
-                for tr in table.findAll('tr'):
-                    row_data = tr.findAll('td')
-                    if row_data:
-                        child_horse_id = tr.findAll('td')[1].find('a')['href'].split("/")[2]
-                        if child_horse_id != "":
-                            if self.db_con.horse_populated(child_horse_id):
-                                continue
-                            self.add_crawl_list(child_horse_id)
-        elif sex == "Mare":
-            offspring_search_url = "https://db.netkeiba.com/mare/" + horse_id + "/"
-            res = self.req_builder.get_page(offspring_search_url)
-            if res == None:
-                return True
-            soup = BeautifulSoup(res, 'html.parser')
-            table = soup.find('table', attrs={'summary': '成績'})
-            for tr in table.findAll('tr'):
-                row_data = tr.findAll('td')
-                if row_data:
-                    child_horse_id = tr.findAll('td')[1].find('a')['href'].split("/")[2]
-                    if child_horse_id != "":
-                        if self.db_con.horse_populated(child_horse_id):
-                            continue
-                        self.add_crawl_list(child_horse_id)
+                if res != None:
+                    soup = BeautifulSoup(res, 'html.parser')
+                    table = soup.find('table', attrs={'summary': '成績'})
+                    for tr in table.findAll('tr'):
+                        row_data = tr.findAll('td')
+                        if row_data:
+                            child_horse_id = tr.findAll('td')[1].find('a')['href'].split("/")[2]
+                            if child_horse_id != "":
+                                if self.db_con.horse_populated(child_horse_id):
+                                    continue
+                                self.add_crawl_list(child_horse_id)
+            if not self.db_con.horse_populated(sire_id):
+                self.add_crawl_list(sire_id)
+            if not self.db_con.horse_populated(dam_id):
+                self.add_crawl_list(dam_id)
         return True
 if __name__ == "__main__":
-    # test_crawler = HorseCrawler()
-    # test_crawler.crawl_horse("2019102383")
-
-    f = open("crawl_list.txt", 'r')
+    crawl_list_dir = "./crawl lists"
+    f = open(os.path.join(crawl_list_dir, "crawl_seed_list.txt"), 'r')
     lines = f.read().splitlines()
     f.close()
 
     start_time = time.time()
     print("start crawling")
     test_crawler = HorseCrawler()
-    test_crawler.crawl_limit = 10000
+    test_crawler.crawl_limit = 20000
+    signal.signal(signal.SIGINT, test_crawler.graceful_shutdown)
     test_crawler.set_crawl_list(lines)
     test_crawler.crawl()
     end_time = time.time()
