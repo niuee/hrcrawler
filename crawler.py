@@ -58,8 +58,9 @@ class HorseCrawler:
     
     def graceful_shutdown(self, signum, frame):
         print("[LOG] shutting down...")
+        crawl_list_dir = "./crawl lists"
+        f = open(os.path.join(crawl_list_dir, "crawl_continue_list.txt"), 'w+')
 
-        f = open("crawl_continue_list.txt", "w+")
         for horse_id in self.crawl_list:
             if horse_id:
                 f.write(horse_id + "\n")
@@ -131,7 +132,7 @@ class HorseCrawler:
         horse_title = soup.find('div', attrs={'class': 'horse_title'})
         profile_table = soup.find('table', attrs={'summary': 'のプロフィール'})
         year = None
-        sex = None
+        gender = None
         sire_id = None
         dam_id = None
         jra_registered = None
@@ -140,6 +141,8 @@ class HorseCrawler:
         classic = None
         born_place = None
         actively_racing = None
+        attrs = None
+        name = None
 
         # get year
         if profile_table and profile_table.find('td').text:
@@ -159,25 +162,29 @@ class HorseCrawler:
                 print("[LOG]: no born date provided")
         
         # get name
-        name = soup.find('div', attrs={'class': 'horse_title'}).find('h1').text
-        if name == "":
-            return False
+        horse_title = soup.find('div', attrs={'class': 'horse_title'})
+        if horse_title:
+            name = horse_title.find('h1').text
+            if name == "":
+                return False
 
         # get attrs
-        attrs = soup.find('div', attrs={'class': 'horse_title'}).find('p', attrs={'class': 'txt_01'})
-        attrs = next(attrs.strings)
-        attrs = attrs.replace(" ", "").split("\u3000")
-
-        # get horse sex
-        if len(attrs) > 2:
-            sex = attrs[1][0]
-
-        # get fur color
-        if len(attrs) > 3:
-            fur_color = attrs[2]
-        if fur_color and fur_color == "":
-            print("[LOG]: no fur color provided")
-            fur_color = None
+        if horse_title:
+            attrs = soup.find('div', attrs={'class': 'horse_title'}).find('p', attrs={'class': 'txt_01'})
+        if attrs:
+            attrs = next(attrs.strings)
+            attrs = attrs.replace(" ", "").split("\u3000")
+        print("[LOG]: attrs:", attrs)
+        if attrs:
+            # get horse gender
+            if len(attrs) >= 2 and len(attrs[1]) >= 1:
+                gender = attrs[1][0]
+            # get fur color
+            if len(attrs) >= 3:
+                fur_color = attrs[2]
+            if fur_color and fur_color == "":
+                print("[LOG]: no fur color provided")
+                fur_color = None
 
         if attrs: 
             if attrs[0] == "抹消" or attrs[0] == "現役":
@@ -189,23 +196,25 @@ class HorseCrawler:
                 jra_registered = True
 
         # get classic status
-        classic_tag = soup.find('div', attrs={'class': 'horse_title'}).find('p', attrs={'class': 'txt_01'}).find('span')
-        if classic_tag:
-            classic = True
-            jra_registered = True
+        if horse_title:
+            classic_tag = horse_title.find('p', attrs={'class': 'txt_01'}).find('span')
+            if classic_tag:
+                classic = True
+                jra_registered = True
 
         # get alt name
-        eng_para_tag = horse_title.find('p', attrs={'class': 'eng_name'})
-        if eng_para_tag:
-            alt_name = horse_title.find('a').text
-            # print("Alt name raw:", alt_name)
-            if is_cjk(alt_name[0]):
-                print("[LOG]: alt name is not in alphabets")
+        if horse_title:
+            eng_para_tag = horse_title.find('p', attrs={'class': 'eng_name'})
+            if eng_para_tag:
+                alt_name = horse_title.find('a').text
+                # print("Alt name raw:", alt_name)
+                if is_cjk(alt_name[0]):
+                    print("[LOG]: alt name is not in alphabets")
+                else:
+                    print("[LOG]: alt name is in alphabets")
+                    name, alt_name = alt_name, name
             else:
-                print("[LOG]: alt name is in alphabets")
-                name, alt_name = alt_name, name
-        else:
-            print("[LOG]: no alt name provided")
+                print("[LOG]: no alt name provided")
         
         pedigree_table = soup.find('table', attrs={'class': 'blood_table'}).findAll('tr')
 
@@ -225,17 +234,17 @@ class HorseCrawler:
             dam_id = dam['href'].split("/")[3]
             dam = dam.text
         
-        if sex:
-            if sex == '牡':
-                sex = 'Horse'
-            elif sex == '牝':
-                sex = 'Mare'
-            elif sex == 'セ':
-                sex = 'Gelding'
+        if gender:
+            if gender == '牡':
+                gender = 'Horse'
+            elif gender == '牝':
+                gender = 'Mare'
+            elif gender == 'セ':
+                gender = 'Gelding'
 
         print("name:", name)
         print("alt name:", alt_name)
-        print("sex:", sex)
+        print("gender:", gender)
         print("born year:", year)
         print("fur color:", fur_color)
         print("sire: {}, sire id: {}".format(sire, sire_id))
@@ -260,8 +269,8 @@ class HorseCrawler:
                 self.db_con.insert_horse_attribute(horse_id, "alt_name", alt_name)
             if year:
                 self.db_con.insert_horse_attribute(horse_id, "born_date", year)
-            if sex:
-                self.db_con.insert_horse_attribute(horse_id, "horse_sex", sex)
+            if gender:
+                self.db_con.insert_horse_attribute(horse_id, "gender", gender)
             if sire_id:
                 self.db_con.insert_horse_attribute(horse_id, "sire_id", sire_id)
             if dam_id:
@@ -284,7 +293,7 @@ class HorseCrawler:
             return False
         
         if recusive:
-            if sex == "Horse":
+            if gender == "Horse":
                 name_in_param = urllib.parse.quote(name.encode('euc-jp'))
                 offspring_search_url = "https://db.netkeiba.com/?pid=horse_list&sire=" + name_in_param
                 test_res = self.req_builder.get_page(offspring_search_url)
@@ -310,7 +319,7 @@ class HorseCrawler:
                                         if self.db_con.horse_populated(child_horse_id):
                                             continue
                                         self.add_crawl_list(child_horse_id)
-            elif sex == "Mare":
+            elif gender == "Mare":
                 offspring_search_url = "https://db.netkeiba.com/mare/" + horse_id + "/"
                 res = self.req_builder.get_page(offspring_search_url)
                 if res != None:
@@ -329,9 +338,10 @@ class HorseCrawler:
             if not self.db_con.horse_populated(dam_id):
                 self.add_crawl_list(dam_id)
         return True
+
 if __name__ == "__main__":
     crawl_list_dir = "./crawl lists"
-    f = open(os.path.join(crawl_list_dir, "crawl_seed_list.txt"), 'r')
+    f = open(os.path.join(crawl_list_dir, "crawl_continue_list.txt"), 'r')
     lines = f.read().splitlines()
     f.close()
 

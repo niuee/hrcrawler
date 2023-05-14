@@ -32,7 +32,7 @@ def crawl_active(start_page, end_page):
             if tds:
                 seed_list.append(tds[1].find('a')['href'].split('/')[-2])
 
-crawl_active(110, 130)
+crawl_active(200, 300)
 f = open('crawl_seed_list.txt', 'w+')
 for id in seed_list:
     f.write(id + '\n')
